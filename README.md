@@ -134,9 +134,9 @@ claude-scheduler help
 
 ## 注意事項
 
-- 各pingは実際にClaude Codeを1回呼び出すため、わずかに利用量を消費します。
+- 各pingは実際にClaude Codeを1回呼び出すため、わずかに利用量を消費します。利用量を抑えるため、pingはhaikuモデルで送信します。
 - 利用枠の起算タイミングやリセット周期の正確な仕様は変更される可能性があります。
   最新の挙動は公式ドキュメントで確認してください。
-  https://docs.claude.com/en/docs/claude-code/overview
+  https://code.claude.com/docs/ja/overview
 - 本ツールはあくまで「早い時間に軽い呼び出しを送って枠を開始させる」という
   スケジューリングの補助であり、利用制限の仕組み自体を変更・回避するものではありません。

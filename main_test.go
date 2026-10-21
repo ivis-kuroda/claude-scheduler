@@ -84,8 +84,8 @@ func TestBuildCronLines(t *testing.T) {
 		"/opt/claude/bin",
 	)
 	want := []string{
-		`0 7 * * 1,3 PATH='/opt/claude/bin':"$PATH" claude -p 'ok' >> '/tmp/p.log' 2>&1 # claude-ping-scheduler`,
-		`30 12 * * 1,3 PATH='/opt/claude/bin':"$PATH" claude -p 'ok' >> '/tmp/p.log' 2>&1 # claude-ping-scheduler`,
+		`0 7 * * 1,3 PATH='/opt/claude/bin':"$PATH" claude --model haiku -p 'ok' >> '/tmp/p.log' 2>&1 # claude-ping-scheduler`,
+		`30 12 * * 1,3 PATH='/opt/claude/bin':"$PATH" claude --model haiku -p 'ok' >> '/tmp/p.log' 2>&1 # claude-ping-scheduler`,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %q\nwant %q", got, want)
@@ -94,7 +94,7 @@ func TestBuildCronLines(t *testing.T) {
 
 func TestBuildShellCommandEscaping(t *testing.T) {
 	got := buildShellCommand(options{prompt: "100% it's $(rm -rf ~)"}, "")
-	want := `claude -p '100\% it'\''s $(rm -rf ~)'`
+	want := `claude --model haiku -p '100\% it'\''s $(rm -rf ~)'`
 	if got != want {
 		t.Errorf("got %s want %s", got, want)
 	}
@@ -172,7 +172,7 @@ func TestAddCronWithoutExistingCrontab(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if *content != "0 7 * * 1 claude -p 'ok' # claude-ping-scheduler\n" {
+	if *content != "0 7 * * 1 claude --model haiku -p 'ok' # claude-ping-scheduler\n" {
 		t.Errorf("unexpected crontab: %q", *content)
 	}
 }
@@ -249,7 +249,7 @@ func TestListCronFiltersMarkerLines(t *testing.T) {
 
 func TestBuildBatContent(t *testing.T) {
 	got := buildBatContent(options{prompt: "100% ok", log: `C:\Users\me\%TEMP%.log`})
-	want := "@echo off\r\nchcp 65001 >nul\r\nclaude -p \"100%% ok\" >> \"C:\\Users\\me\\%%TEMP%%.log\" 2>&1\r\n"
+	want := "@echo off\r\nchcp 65001 >nul\r\nclaude --model haiku -p \"100%% ok\" >> \"C:\\Users\\me\\%%TEMP%%.log\" 2>&1\r\n"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}

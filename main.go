@@ -22,6 +22,9 @@ import (
 
 const marker = "claude-ping-scheduler"
 
+// pingModel is the model used for pings. A small model keeps usage low.
+const pingModel = "haiku"
+
 var dayCron = map[string]string{
 	"sun": "0", "mon": "1", "tue": "2", "wed": "3", "thu": "4", "fri": "5", "sat": "6",
 }
@@ -303,7 +306,7 @@ func shellQuote(s string) string {
 // buildShellCommand builds the command part of a crontab line.
 // cron runs jobs with a minimal PATH, so claudeDir (if known) is prepended to PATH.
 func buildShellCommand(opts options, claudeDir string) string {
-	cmd := "claude -p " + shellQuote(opts.prompt)
+	cmd := "claude --model " + pingModel + " -p " + shellQuote(opts.prompt)
 	if claudeDir != "" {
 		cmd = "PATH=" + shellQuote(claudeDir) + `:"$PATH" ` + cmd
 	}
@@ -474,7 +477,7 @@ func taskName(ts timeSpec) string {
 func buildBatContent(opts options) string {
 	// Escape '%' as '%%' because batch files expand it as a variable.
 	esc := func(s string) string { return strings.ReplaceAll(s, "%", "%%") }
-	content := "@echo off\r\nchcp 65001 >nul\r\nclaude -p \"" + esc(opts.prompt) + "\""
+	content := "@echo off\r\nchcp 65001 >nul\r\nclaude --model " + pingModel + " -p \"" + esc(opts.prompt) + "\""
 	if opts.log != "" {
 		content += " >> \"" + esc(opts.log) + "\" 2>&1"
 	}
@@ -641,5 +644,5 @@ remove は指定した時刻のジョブを削除します。すべて削除す�
   - 各pingは実際にAPIを消費するため利用量にわずかに反映されます。
   - 利用枠の起算/リセットの正確な仕様は変更される可能性があるため、
     最新情報は公式ドキュメントで確認してください。
-    https://docs.claude.com/en/docs/claude-code/overview`)
+    https://code.claude.com/docs/ja/overview`)
 }
