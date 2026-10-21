@@ -12,6 +12,8 @@ Claude Codeの5時間利用枠(rolling window)を狙ったタイミングで開�
 
 ## 配布ファイル
 
+[Releases](https://github.com/ivis-kuroda/claude-scheduler/releases) ページから、OSに合ったファイルをダウンロードしてください。
+
 | ファイル | 対象 |
 |---|---|
 | `claude-scheduler-linux-amd64` | Linux (x86_64) |
@@ -42,39 +44,93 @@ claude-scheduler remove all      # すべて削除
 .\claude-scheduler-windows-amd64.exe remove all
 ```
 
-### 共通オプション
+Windowsでは、以下の `claude-scheduler` を `.\claude-scheduler-windows-amd64.exe` に読み替えてください。
 
-```
+## コマンド
+
+### `claude-scheduler add`
+
+指定した時刻にpingを送るジョブを登録します。Linux/macOSではcrontabに、Windowsではタスクスケジューラに登録します。
+
+同じ時刻のジョブがすでにあれば上書きし、それ以外の時刻のジョブは残します。
+
+#### 使い方
+
+```bash
 claude-scheduler add <時刻...> [オプション]
-
---days <list>    カンマ区切りの曜日 (sun,mon,tue,wed,thu,fri,sat)
-                 デフォルト: mon,tue,wed,thu,fri
---prompt <text>  送信するプロンプト文字列。デフォルト: "ok"
---log <path>     実行結果を追記するログファイルのパス
 ```
 
-- `add` は同じ時刻のジョブだけを上書きし、それ以外の時刻のジョブは残します。すべて消すには `remove all` を使います。
-- `remove <時刻...>` は指定した時刻のジョブを、`remove all` はすべてのジョブを削除します。どちらもこのツールが登録したジョブだけが対象で、それ以外のcron行やタスクには影響しません。
-- `--prompt` / `--log` には `"` と改行は使えません。
+#### 引数
 
-例:
-```bash
-claude-scheduler add 07:00 12:00 17:00 --prompt "hello" --log ~/claude-ping.log
-```
+| 引数 | |
+|---|---|
+| `<時刻...>` | pingを送る時刻。`HH:MM` 形式 (例: `07:00`, `7:05`)。スペース区切りで複数指定できる |
 
-## ソースからビルドする場合
+#### オプション
 
-`main.go` を使い、Goがインストールされた環境で以下のようにクロスコンパイルできます。
+| オプション | |
+|---|---|
+| `--days <list>` | 実行する曜日。カンマ区切りで `sun`, `mon`, `tue`, `wed`, `thu`, `fri`, `sat` から指定する (デフォルト: `mon,tue,wed,thu,fri`) |
+| `--prompt <text>` | 送信するプロンプト。`"` と改行は使えない (デフォルト: `ok`) |
+| `--log <path>` | 実行結果を追記するログファイルのパス。`"` と改行は使えない (デフォルト: なし) |
+
+#### 例
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o claude-scheduler-linux-amd64 .
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o claude-scheduler-windows-amd64.exe .
-GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o claude-scheduler-darwin-arm64 .
+# 平日の7時・12時・17時に登録
+claude-scheduler add 07:00 12:00 17:00
+
+# 土日の9時に、プロンプトとログファイルを指定して登録
+claude-scheduler add 09:00 --days sat,sun --prompt "hello" --log ~/claude-ping.log
 ```
 
-標準ライブラリのみので構成されているので、`go build` だけで完結します。
+### `claude-scheduler list`
 
-テストは `go test ./...` で実行できます。`crontab` / `schtasks` の呼び出しは差し替えているので、どのOSでも全テストが動きます。
+このツールで登録したジョブの一覧を表示します。
+
+#### 使い方
+
+```bash
+claude-scheduler list
+```
+
+### `claude-scheduler remove`
+
+このツールで登録したジョブを削除します。このツール以外で登録したcronの行やタスクには影響しません。
+
+#### 使い方
+
+```bash
+claude-scheduler remove <時刻...>
+claude-scheduler remove all
+```
+
+#### 引数
+
+| 引数 | |
+|---|---|
+| `<時刻...>` | 削除するジョブの時刻。`HH:MM` 形式。スペース区切りで複数指定できる。登録されていない時刻は警告を表示して無視する |
+| `all` | このツールで登録したすべてのジョブを削除する。時刻と同時には指定できない |
+
+#### 例
+
+```bash
+# 12時と17時のジョブを削除
+claude-scheduler remove 12:00 17:00
+
+# すべて削除
+claude-scheduler remove all
+```
+
+### `claude-scheduler help`
+
+ヘルプを表示します。`-h`, `--help` も同じです。
+
+#### 使い方
+
+```bash
+claude-scheduler help
+```
 
 ## 注意事項
 
