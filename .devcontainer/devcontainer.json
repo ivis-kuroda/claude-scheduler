@@ -1,0 +1,13 @@
+{
+  "name": "claude-scheduler",
+  "image": "mcr.microsoft.com/devcontainers/go:latest",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  }
+}
