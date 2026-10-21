@@ -1,0 +1,36 @@
+version: 2
+
+project_name: claude-scheduler
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+# Publish raw binaries (no tar.gz/zip), e.g. claude-scheduler-windows-amd64.exe
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  # Tags like v1.0.0-rc.1 are published as pre-releases.
+  prerelease: auto
