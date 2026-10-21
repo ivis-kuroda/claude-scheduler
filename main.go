@@ -1,9 +1,10 @@
 // claude-scheduler
 //
-// Claude Codeの利用枠(rolling window)を狙ったタイミングで開始させるための
-// 軽量ping登録CLI。Linux/macOSでは crontab、Windowsでは schtasks を
-// 自動で使い分ける。Node.js等のランタイムに依存せず、単一バイナリとして
-// 動作する(GOOS/GOARCHでクロスコンパイルして配布する想定)。
+// A lightweight CLI that registers scheduled pings so that Claude Code's
+// usage window (rolling window) starts at the times you choose. It uses
+// crontab on Linux/macOS and schtasks on Windows. It has no runtime
+// dependencies such as Node.js and runs as a single binary (intended to be
+// cross-compiled with GOOS/GOARCH and distributed).
 package main
 
 import (
@@ -20,8 +21,6 @@ import (
 )
 
 const marker = "claude-ping-scheduler"
-
-var dayOrder = []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
 
 var dayCron = map[string]string{
 	"sun": "0", "mon": "1", "tue": "2", "wed": "3", "thu": "4", "fri": "5", "sat": "6",
@@ -42,6 +41,28 @@ type options struct {
 	log    string
 }
 
+// runCommand runs an external command and returns its stdout. A non-empty stdin is
+// passed to the command's standard input. On failure, the error includes stderr.
+// It is a variable so that tests can replace it.
+var runCommand = func(stdin, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return out, err
+}
+
+// lookPath is a variable so that tests can replace it.
+var lookPath = exec.LookPath
+
 func main() {
 	if len(os.Args) < 2 {
 		printHelp()
@@ -57,7 +78,7 @@ func main() {
 			fatal(err)
 		}
 	case "remove":
-		if err := runRemove(); err != nil {
+		if err := runRemove(rest); err != nil {
 			fatal(err)
 		}
 	case "list":
@@ -67,7 +88,9 @@ func main() {
 	case "-h", "--help", "help":
 		printHelp()
 	default:
+		fmt.Fprintln(os.Stderr, "不明なコマンドです: "+cmd)
 		printHelp()
+		os.Exit(1)
 	}
 }
 
@@ -76,7 +99,7 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// ---------- 引数パース ----------
+// ---------- argument parsing ----------
 
 func parseOptions(args []string) ([]string, options, error) {
 	opts := options{
@@ -93,12 +116,11 @@ func parseOptions(args []string) ([]string, options, error) {
 			if i >= len(args) {
 				return nil, opts, fmt.Errorf("--days に値がありません")
 			}
-			opts.days = strings.Split(strings.ToLower(args[i]), ",")
-			for _, d := range opts.days {
-				if _, ok := dayCron[strings.TrimSpace(d)]; !ok {
-					return nil, opts, fmt.Errorf("不正な曜日です: %s", d)
-				}
+			days, err := parseDays(args[i])
+			if err != nil {
+				return nil, opts, err
 			}
+			opts.days = days
 		case a == "--prompt":
 			i++
 			if i >= len(args) {
@@ -117,7 +139,32 @@ func parseOptions(args []string) ([]string, options, error) {
 			times = append(times, a)
 		}
 	}
+
+	// Reject '"' and newlines because they cannot be safely embedded in a .bat file or crontab.
+	if strings.ContainsAny(opts.prompt, "\"\r\n") {
+		return nil, opts, fmt.Errorf(`--prompt に '"' や改行は使えません`)
+	}
+	if strings.ContainsAny(opts.log, "\"\r\n") {
+		return nil, opts, fmt.Errorf(`--log に '"' や改行は使えません`)
+	}
 	return times, opts, nil
+}
+
+// parseDays parses comma-separated days into a lowercased, trimmed, deduplicated list.
+func parseDays(s string) ([]string, error) {
+	var days []string
+	seen := map[string]bool{}
+	for _, d := range strings.Split(strings.ToLower(s), ",") {
+		d = strings.TrimSpace(d)
+		if _, ok := dayCron[d]; !ok {
+			return nil, fmt.Errorf("不正な曜日です: %s", d)
+		}
+		if !seen[d] {
+			seen[d] = true
+			days = append(days, d)
+		}
+	}
+	return days, nil
 }
 
 var timeRe = regexp.MustCompile(`^([01]?\d|2[0-3]):([0-5]\d)$`)
@@ -142,13 +189,9 @@ func runAdd(args []string) error {
 	if len(times) == 0 {
 		return fmt.Errorf("少なくとも1つの時刻を指定してください (例: 07:00)")
 	}
-	var specs []timeSpec
-	for _, t := range times {
-		ts, err := parseTime(t)
-		if err != nil {
-			return err
-		}
-		specs = append(specs, ts)
+	specs, err := parseTimes(times)
+	if err != nil {
+		return err
 	}
 
 	if runtime.GOOS == "windows" {
@@ -164,65 +207,193 @@ func runList() error {
 	return listCron()
 }
 
-func runRemove() error {
-	if runtime.GOOS == "windows" {
-		return removeWindows()
+func runRemove(args []string) error {
+	specs, err := parseRemoveArgs(args)
+	if err != nil {
+		return err
 	}
-	return removeCron()
+	if runtime.GOOS == "windows" {
+		return removeWindows(specs)
+	}
+	return removeCron(specs)
+}
+
+// parseRemoveArgs parses the arguments of remove. It returns nil (all jobs) for "all".
+func parseRemoveArgs(args []string) ([]timeSpec, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("削除する時刻か all を指定してください (例: remove 07:00 / remove all)")
+	}
+	for _, a := range args {
+		if a == "all" {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("all と時刻は同時に指定できません")
+			}
+			return nil, nil
+		}
+	}
+	return parseTimes(args)
+}
+
+// parseTimes parses time strings and returns them without duplicates.
+func parseTimes(times []string) ([]timeSpec, error) {
+	var specs []timeSpec
+	seen := map[timeSpec]bool{}
+	for _, t := range times {
+		ts, err := parseTime(t)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[ts] {
+			seen[ts] = true
+			specs = append(specs, ts)
+		}
+	}
+	return specs, nil
+}
+
+func warnNotRegistered(ts timeSpec) {
+	fmt.Fprintf(os.Stderr, "警告: %02d:%02d のジョブは登録されていません。\n", ts.hour, ts.minute)
 }
 
 // ---------- Linux / macOS (cron) ----------
 
-func readCrontab() string {
-	out, err := exec.Command("crontab", "-l").Output()
+func readCrontab() (string, error) {
+	out, err := runCommand("", "crontab", "-l")
 	if err != nil {
-		return "" // crontabが空/未設定の場合はエラーになるので無視
+		// With no crontab set, this fails with "no crontab for <user>", so treat it as empty.
+		// Any other failure is an error: treating it as empty would wipe the existing crontab.
+		if strings.Contains(err.Error(), "no crontab") {
+			return "", nil
+		}
+		return "", fmt.Errorf("crontabの読み込みに失敗しました: %w", err)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 func writeCrontab(content string) error {
-	cmd := exec.Command("crontab", "-")
-	cmd.Stdin = bytes.NewBufferString(content)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func buildShellCommand(opts options) string {
-	cmd := fmt.Sprintf(`claude -p "%s"`, opts.prompt)
-	if opts.log != "" {
-		cmd += fmt.Sprintf(` >> "%s" 2>&1`, opts.log)
+	if _, err := runCommand(content, "crontab", "-"); err != nil {
+		return fmt.Errorf("crontabの書き込みに失敗しました: %w", err)
 	}
-	return cmd
+	return nil
 }
 
-func addCron(specs []timeSpec, opts options) error {
-	existing := readCrontab()
+func isCronJobLine(l string) bool {
+	return strings.HasSuffix(strings.TrimSpace(l), "# "+marker)
+}
+
+// cronLineTime extracts the time (minute and hour fields) from one of this tool's cron lines.
+func cronLineTime(l string) (timeSpec, bool) {
+	f := strings.Fields(l)
+	if len(f) < 2 {
+		return timeSpec{}, false
+	}
+	mi, err1 := strconv.Atoi(f[0])
+	h, err2 := strconv.Atoi(f[1])
+	if err1 != nil || err2 != nil {
+		return timeSpec{}, false
+	}
+	return timeSpec{hour: h, minute: mi}, true
+}
+
+// shellQuote wraps s in single quotes for POSIX sh.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// buildShellCommand builds the command part of a crontab line.
+// cron runs jobs with a minimal PATH, so claudeDir (if known) is prepended to PATH.
+func buildShellCommand(opts options, claudeDir string) string {
+	cmd := "claude -p " + shellQuote(opts.prompt)
+	if claudeDir != "" {
+		cmd = "PATH=" + shellQuote(claudeDir) + `:"$PATH" ` + cmd
+	}
+	if opts.log != "" {
+		cmd += " >> " + shellQuote(opts.log) + " 2>&1"
+	}
+	// Escape '%' because crontab interprets it as a newline.
+	return strings.ReplaceAll(cmd, "%", `\%`)
+}
+
+func buildCronLines(specs []timeSpec, opts options, claudeDir string) []string {
+	var dayNums []string
+	for _, d := range opts.days {
+		dayNums = append(dayNums, dayCron[d])
+	}
+	dayStr := strings.Join(dayNums, ",")
+	shellCmd := buildShellCommand(opts, claudeDir)
+
+	var lines []string
+	for _, ts := range specs {
+		lines = append(lines, fmt.Sprintf("%d %d * * %s %s # %s", ts.minute, ts.hour, dayStr, shellCmd, marker))
+	}
+	return lines
+}
+
+// mergeCrontab appends new lines to the existing crontab.
+// Existing jobs at the same times are replaced; all other lines (jobs at other times,
+// blank lines and comments) are kept.
+func mergeCrontab(existing string, specs []timeSpec, newLines []string) string {
+	kept, _, _ := removeCronJobs(existing, specs)
+	return joinLines(append(trimTrailingBlank(strings.Split(kept, "\n")), newLines...))
+}
+
+// removeCronJobs removes this tool's jobs from the existing crontab.
+// If specs is nil, all jobs are removed; otherwise only jobs at the given times.
+// It returns the new content, the number of removed jobs, and the times actually found.
+func removeCronJobs(existing string, specs []timeSpec) (string, int, map[timeSpec]bool) {
+	target := map[timeSpec]bool{}
+	for _, ts := range specs {
+		target[ts] = true
+	}
 	var kept []string
+	removed := 0
+	found := map[timeSpec]bool{}
 	for _, l := range strings.Split(existing, "\n") {
-		if strings.TrimSpace(l) == "" || strings.Contains(l, marker) {
-			continue
+		if isCronJobLine(l) {
+			ts, ok := cronLineTime(l)
+			if specs == nil || (ok && target[ts]) {
+				removed++
+				found[ts] = true
+				continue
+			}
 		}
 		kept = append(kept, l)
 	}
+	return joinLines(trimTrailingBlank(kept)), removed, found
+}
 
-	var dayNums []string
-	for _, d := range opts.days {
-		dayNums = append(dayNums, dayCron[strings.TrimSpace(d)])
+func trimTrailingBlank(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
 	}
-	dayStr := strings.Join(dayNums, ",")
-	shellCmd := buildShellCommand(opts)
+	return lines
+}
 
-	var newLines []string
-	for _, ts := range specs {
-		line := fmt.Sprintf("%d %d * * %s %s # %s", ts.minute, ts.hour, dayStr, shellCmd, marker)
-		newLines = append(newLines, line)
+func joinLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func addCron(specs []timeSpec, opts options) error {
+	existing, err := readCrontab()
+	if err != nil {
+		return err
 	}
 
-	final := strings.Join(append(kept, newLines...), "\n") + "\n"
-	if err := writeCrontab(final); err != nil {
-		return fmt.Errorf("crontabの書き込みに失敗しました: %w", err)
+	claudeDir := ""
+	if p, err := lookPath("claude"); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			claudeDir = filepath.Dir(abs)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "警告: claude コマンドがPATHに見つかりません。cron実行時に失敗する可能性があります。")
+	}
+
+	newLines := buildCronLines(specs, opts, claudeDir)
+	if err := writeCrontab(mergeCrontab(existing, specs, newLines)); err != nil {
+		return err
 	}
 
 	fmt.Printf("%d件のcronジョブを登録しました:\n", len(newLines))
@@ -232,36 +403,40 @@ func addCron(specs []timeSpec, opts options) error {
 	return nil
 }
 
-func removeCron() error {
-	existing := readCrontab()
-	var kept []string
-	removed := 0
-	for _, l := range strings.Split(existing, "\n") {
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		if strings.Contains(l, marker) {
-			removed++
-			continue
-		}
-		kept = append(kept, l)
+func removeCron(specs []timeSpec) error {
+	existing, err := readCrontab()
+	if err != nil {
+		return err
 	}
-	content := ""
-	if len(kept) > 0 {
-		content = strings.Join(kept, "\n") + "\n"
+	content, removed, found := removeCronJobs(existing, specs)
+	for _, ts := range specs {
+		if !found[ts] {
+			warnNotRegistered(ts)
+		}
+	}
+	if removed == 0 {
+		if specs == nil {
+			fmt.Println("登録されているジョブはありません。")
+		} else {
+			fmt.Println("削除対象のジョブはありません。")
+		}
+		return nil
 	}
 	if err := writeCrontab(content); err != nil {
-		return fmt.Errorf("crontabの書き込みに失敗しました: %w", err)
+		return err
 	}
 	fmt.Printf("%d件のcronジョブを削除しました。\n", removed)
 	return nil
 }
 
 func listCron() error {
-	existing := readCrontab()
+	existing, err := readCrontab()
+	if err != nil {
+		return err
+	}
 	var lines []string
 	for _, l := range strings.Split(existing, "\n") {
-		if strings.Contains(l, marker) {
+		if isCronJobLine(l) {
 			lines = append(lines, l)
 		}
 	}
@@ -294,6 +469,18 @@ func taskName(ts timeSpec) string {
 	return fmt.Sprintf("ClaudePing_%02d%02d", ts.hour, ts.minute)
 }
 
+// buildBatContent builds the batch file run by the task.
+// The file is written as UTF-8, so it switches the code page to 65001 (UTF-8) first.
+func buildBatContent(opts options) string {
+	// Escape '%' as '%%' because batch files expand it as a variable.
+	esc := func(s string) string { return strings.ReplaceAll(s, "%", "%%") }
+	content := "@echo off\r\nchcp 65001 >nul\r\nclaude -p \"" + esc(opts.prompt) + "\""
+	if opts.log != "" {
+		content += " >> \"" + esc(opts.log) + "\" 2>&1"
+	}
+	return content + "\r\n"
+}
+
 func addWindows(specs []timeSpec, opts options) error {
 	dir, err := winScriptDir()
 	if err != nil {
@@ -302,7 +489,7 @@ func addWindows(specs []timeSpec, opts options) error {
 
 	var dayNames []string
 	for _, d := range opts.days {
-		dayNames = append(dayNames, dayWin[strings.TrimSpace(d)])
+		dayNames = append(dayNames, dayWin[d])
 	}
 	dayStr := strings.Join(dayNames, ",")
 
@@ -310,43 +497,43 @@ func addWindows(specs []timeSpec, opts options) error {
 		name := taskName(ts)
 		batPath := filepath.Join(dir, name+".bat")
 
-		batContent := "@echo off\r\nclaude -p \"" + opts.prompt + "\""
-		if opts.log != "" {
-			batContent += " >> \"" + opts.log + "\" 2>&1"
-		}
-		batContent += "\r\n"
-		if err := os.WriteFile(batPath, []byte(batContent), 0o644); err != nil {
+		if err := os.WriteFile(batPath, []byte(buildBatContent(opts)), 0o644); err != nil {
 			return fmt.Errorf("バッチファイルの作成に失敗しました: %w", err)
 		}
 
-		// 既存の同名タスクがあれば削除(冪等にするため。無ければ無視してよい)
-		_ = exec.Command("schtasks", "/delete", "/tn", name, "/f").Run()
-
 		timeStr := fmt.Sprintf("%02d:%02d", ts.hour, ts.minute)
+		// Quote the path so it is treated as a single command even if it contains spaces.
+		// /f overwrites an existing task with the same name.
 		createArgs := []string{
-			"/create", "/tn", name, "/tr", batPath,
+			"/create", "/tn", name, "/tr", `"` + batPath + `"`,
 			"/sc", "weekly", "/d", dayStr, "/st", timeStr, "/f",
 		}
-		cmd := exec.Command("schtasks", createArgs...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("schtasksの実行に失敗しました: %w", err)
+		if _, err := runCommand("", "schtasks", createArgs...); err != nil {
+			return fmt.Errorf("schtasksの実行に失敗しました (%s): %w", name, err)
 		}
+		fmt.Printf("  %s (%s %s)\n", name, dayStr, timeStr)
 	}
 
 	fmt.Printf("%d件のタスクを登録しました。(バッチファイル格納先: %s)\n", len(specs), dir)
 	return nil
 }
 
-var taskNameRe = regexp.MustCompile(`TaskName:\s+\\?(ClaudePing_\d{4})`)
+// taskNameRe matches the first column (task name) of `schtasks /query /fo CSV /nh`.
+// CSV is used because LIST-format labels (e.g. "TaskName:") change with the OS display language.
+var taskNameRe = regexp.MustCompile(`(?m)^"\\?(ClaudePing_\d{4})"`)
 
-func queryClaudePingTasks() []string {
-	out, err := exec.Command("schtasks", "/query", "/fo", "LIST", "/v").Output()
-	if err != nil {
-		return nil
+func queryClaudePingTasks() ([]string, error) {
+	out, err := runCommand("", "schtasks", "/query", "/fo", "CSV", "/nh")
+	// schtasks may exit non-zero if any single task is corrupt, but stdout still
+	// contains the tasks it could read, so parse it anyway.
+	if err != nil && len(bytes.TrimSpace(out)) == 0 {
+		return nil, fmt.Errorf("タスク一覧の取得に失敗しました: %w", err)
 	}
-	matches := taskNameRe.FindAllStringSubmatch(string(out), -1)
+	return parseTaskNames(string(out)), nil
+}
+
+func parseTaskNames(out string) []string {
+	matches := taskNameRe.FindAllStringSubmatch(out, -1)
 	seen := map[string]bool{}
 	var names []string
 	for _, m := range matches {
@@ -359,26 +546,58 @@ func queryClaudePingTasks() []string {
 	return names
 }
 
-func removeWindows() error {
-	names := queryClaudePingTasks()
+// removeWindows deletes this tool's tasks. If specs is nil, all tasks are deleted.
+func removeWindows(specs []timeSpec) error {
+	names, err := queryClaudePingTasks()
+	if err != nil {
+		return err
+	}
+	if specs != nil {
+		registered := map[string]bool{}
+		for _, n := range names {
+			registered[n] = true
+		}
+		names = nil
+		for _, ts := range specs {
+			if n := taskName(ts); registered[n] {
+				names = append(names, n)
+			} else {
+				warnNotRegistered(ts)
+			}
+		}
+	}
 	if len(names) == 0 {
-		fmt.Println("登録されているジョブはありません。")
+		if specs == nil {
+			fmt.Println("登録されているジョブはありません。")
+		} else {
+			fmt.Println("削除対象のジョブはありません。")
+		}
 		return nil
 	}
 	dir, _ := winScriptDir()
+	var failed []string
 	for _, name := range names {
-		if err := exec.Command("schtasks", "/delete", "/tn", name, "/f").Run(); err == nil {
-			fmt.Println("削除しました: " + name)
+		if _, err := runCommand("", "schtasks", "/delete", "/tn", name, "/f"); err != nil {
+			fmt.Fprintf(os.Stderr, "削除に失敗しました: %s: %v\n", name, err)
+			failed = append(failed, name)
+			continue
 		}
+		fmt.Println("削除しました: " + name)
 		if dir != "" {
 			_ = os.Remove(filepath.Join(dir, name+".bat"))
 		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("%d件のタスクを削除できませんでした: %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
 }
 
 func listWindows() error {
-	names := queryClaudePingTasks()
+	names, err := queryClaudePingTasks()
+	if err != nil {
+		return err
+	}
 	if len(names) == 0 {
 		fmt.Println("登録されているジョブはありません。")
 		return nil
@@ -390,21 +609,22 @@ func listWindows() error {
 	return nil
 }
 
-// ---------- ヘルプ ----------
+// ---------- help ----------
 
 func printHelp() {
 	fmt.Println(`claude-scheduler - Claude Codeの利用枠を狙ったタイミングで開始させるスケジューラ
 
 使い方:
   claude-scheduler add <時刻...> [オプション]
-  claude-scheduler remove
+  claude-scheduler remove <時刻...> | all
   claude-scheduler list
 
 例:
   claude-scheduler add 07:00 12:00 17:00
   claude-scheduler add 07:00 12:00 17:00 --days mon,tue,wed,thu,fri
   claude-scheduler add 07:00 --prompt "hello" --log C:\Users\you\claude-ping.log
-  claude-scheduler remove
+  claude-scheduler remove 07:00 12:00
+  claude-scheduler remove all
   claude-scheduler list
 
 オプション:
@@ -412,6 +632,9 @@ func printHelp() {
                    デフォルト: mon,tue,wed,thu,fri
   --prompt <text>  送信するプロンプト文字列。デフォルト: "ok"
   --log <path>     実行結果を追記するログファイルのパス
+
+add は同じ時刻のジョブを上書きし、それ以外の時刻のジョブは残します。
+remove は指定した時刻のジョブを削除します。すべて削除するには remove all を使ってください。
 
 注意:
   - 事前に 'claude' コマンドがPATHに通っている必要があります。

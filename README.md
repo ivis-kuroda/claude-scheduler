@@ -28,7 +28,8 @@ sudo mv claude-scheduler-linux-amd64 /usr/local/bin/claude-scheduler   # PATHに
 
 claude-scheduler add 07:00 12:00 17:00
 claude-scheduler list
-claude-scheduler remove
+claude-scheduler remove 12:00     # 指定した時刻のジョブを削除
+claude-scheduler remove all      # すべて削除
 ```
 
 ### Windows (PowerShell)
@@ -37,7 +38,8 @@ claude-scheduler remove
 # 適当なフォルダに置いてPATHを通す、もしくはフルパスで実行
 .\claude-scheduler-windows-amd64.exe add 07:00 12:00 17:00
 .\claude-scheduler-windows-amd64.exe list
-.\claude-scheduler-windows-amd64.exe remove
+.\claude-scheduler-windows-amd64.exe remove 12:00
+.\claude-scheduler-windows-amd64.exe remove all
 ```
 
 ### 共通オプション
@@ -50,6 +52,10 @@ claude-scheduler add <時刻...> [オプション]
 --prompt <text>  送信するプロンプト文字列。デフォルト: "ok"
 --log <path>     実行結果を追記するログファイルのパス
 ```
+
+- `add` は同じ時刻のジョブだけを上書きし、それ以外の時刻のジョブは残します。すべて消すには `remove all` を使います。
+- `remove <時刻...>` は指定した時刻のジョブを、`remove all` はすべてのジョブを削除します。どちらもこのツールが登録したジョブだけが対象で、それ以外のcron行やタスクには影響しません。
+- `--prompt` / `--log` には `"` と改行は使えません。
 
 例:
 ```bash
@@ -66,7 +72,9 @@ GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o claude-scheduler-windows-
 GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o claude-scheduler-darwin-arm64 .
 ```
 
-外部依存ライブラリは一切使っていない(標準ライブラリのみ)ので、`go build` だけで完結します。
+標準ライブラリのみので構成されているので、`go build` だけで完結します。
+
+テストは `go test ./...` で実行できます。`crontab` / `schtasks` の呼び出しは差し替えているので、どのOSでも全テストが動きます。
 
 ## 注意事項
 
