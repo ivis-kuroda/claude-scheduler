@@ -27,9 +27,26 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Only user-facing changes (feat / fix / breaking) appear in release notes.
 changelog:
-  use: github
-  sort: asc
+  use: git
+  abbrev: 7
+  format: "{{ .SHA }} {{ .Message }}"
+  filters:
+    include:
+      - '^\w+(\([^)]+\))?!:'
+      - '^feat(\([^)]+\))?:'
+      - '^fix(\([^)]+\))?:'
+  groups:
+    - title: Breaking Changes
+      regexp: '^\w+(\([^)]+\))?!:'
+      order: 0
+    - title: Features
+      regexp: '^feat(\([^)]+\))?:'
+      order: 1
+    - title: Bug Fixes
+      regexp: '^fix(\([^)]+\))?:'
+      order: 2
 
 release:
   # Tags like v1.0.0-rc.1 are published as pre-releases.
